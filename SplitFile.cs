@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace SplitFile
@@ -12,13 +13,34 @@ namespace SplitFile
         {
             var fromPath = args.FirstOrDefault();
 
-            var toSizeText = args.Skip(1).FirstOrDefault() ?? (50 * 1024 * 1024).ToString();
-            var toSize = int.Parse(toSizeText);
+            var toSizeText = args.Skip(1).FirstOrDefault() ?? "500 MB";
+            var toSize = GetSize(toSizeText);
 
             await foreach (var toPath in SplitAsync(fromPath, toSize))
             {
                 Console.WriteLine(toPath);
             }
+        }
+
+        public static int GetSize(string text)
+        {
+            var match = Regex.Match(text.ToLower(), @"(?<number>\d+)\s*(?<unit>k|m|g)?B?");
+            if (!match.Success)
+            {
+                throw new ArgumentException(nameof(text));
+            }
+
+            var numberText = match.Groups["number"].Value;
+            var numberValue = int.Parse(numberText);
+
+            var unitText = match.Groups["unit"].Value;
+            return unitText switch
+            {
+                "k" => numberValue * 1024,
+                "m" => numberValue * 1024 * 1024,
+                "g" => numberValue * 1024 * 1024 * 1024,
+                _ => numberValue,
+            };
         }
 
         public static async IAsyncEnumerable<string> SplitAsync(string fromPath, int toSize)
@@ -33,35 +55,24 @@ namespace SplitFile
                 throw new ArgumentException(nameof(toSize));
             }
 
-            await foreach (var toPath in SplitAsync(fromPath,
-                $"{Path.GetFileNameWithoutExtension(fromPath)}.{{0}}{Path.GetExtension(fromPath)}",
-                toSize))
-            {
-                yield return toPath;
-            }
-        }
-        private static async IAsyncEnumerable<string> SplitAsync(string fromPath, string toPattern, int toSize)
-        {
             using var fromStream = File.OpenRead(fromPath);
+
             var buffer = new byte[10 * 1024 * 1024];
+
             var index = 0;
-            while (true)
+            while (fromStream.Position < fromStream.Length)
             {
-                var toPath = string.Format(toPattern, index++);
+                var toPath = $"{Path.GetFileNameWithoutExtension(fromPath)}.{index++}{Path.GetExtension(fromPath)}";
+
                 using (var toStream = File.OpenWrite(toPath))
                 {
                     await CopyAsync(fromStream, toStream, buffer, toSize);
                 }
 
                 yield return toPath;
-
-                if (fromStream.Position >= fromStream.Length)
-                {
-                    yield break;
-                }
             }
         }
-        
+
         private static async Task CopyAsync(Stream from, Stream to, byte[] buffer, int limit)
         {
             var count = limit;
@@ -71,7 +82,7 @@ namespace SplitFile
 
                 await to.WriteAsync(buffer, 0, read);
 
-                if (read < count)
+                if (read <= 0)
                 {
                     return;
                 }
